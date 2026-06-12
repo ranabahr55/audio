@@ -108,8 +108,12 @@ void Recorder::push(const float* in, std::size_t n_floats) {
             overruns_.fetch_add(drop / frame_floats_);
         }
 
+        // Boost the I2S MEMS mic (ICS-43434) as samples land in the ring. The
+        // multiply is cheap and real-time-safe; load the gain once so it stays
+        // constant across this frame.
+        const float g = push_gain_.load();
         for (std::size_t i = 0; i < n_floats; ++i) {
-            ring_[tail_] = in[i];
+            ring_[tail_] = in[i] * g;
             tail_ = (tail_ + 1) % cap;
         }
         count_ += n_floats;

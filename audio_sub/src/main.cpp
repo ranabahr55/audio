@@ -317,13 +317,28 @@ private:
 
 PlaybackFifo* g_fifo = nullptr;
 int g_channels = 1;
+// Software output (playback) gain, applied to every sample just before it goes
+// to the speakers. Lets you go LOUDER than the OS volume already maxed at 100%
+// — useful for hearing a quiet stream on built-in speakers without headphones.
+std::atomic<float> g_output_gain{1.0f};
 
 int PaOutputCallback(const void* /*input*/, void* output,
                      unsigned long frame_count,
                      const PaStreamCallbackTimeInfo* /*time_info*/,
                      PaStreamCallbackFlags /*flags*/, void* /*user*/) {
-    g_fifo->pop(static_cast<float*>(output),
-                static_cast<std::size_t>(frame_count) * g_channels);
+    const std::size_t n = static_cast<std::size_t>(frame_count) * g_channels;
+    float* out = static_cast<float*>(output);
+    g_fifo->pop(out, n);
+
+    const float g = g_output_gain.load(std::memory_order_relaxed);
+    if (g != 1.0f) {
+        for (std::size_t i = 0; i < n; ++i) {
+            float x = out[i] * g;
+            // Hard-limit to the valid range so over-boosting clips cleanly at
+            // the speaker instead of wrapping into noise.
+            out[i] = x > 1.0f ? 1.0f : (x < -1.0f ? -1.0f : x);
+        }
+    }
     return paContinue;
 }
 
@@ -362,6 +377,12 @@ int main(int argc, char** argv) {
     // --- Jitter buffer tuning (player-only; optional in config) -------------
     const int prebuffer_ms  = cfg.integer("prebuffer_ms", 40);
     const int max_buffer_ms = cfg.integer("max_buffer_ms", 200);
+
+    // Software playback gain, applied just before the speakers. Lets you go
+    // louder than the OS max so a quiet stream is audible without headphones.
+    const double output_gain = std::stod(cfg.str("output_gain", "1.0"));
+    g_output_gain.store(static_cast<float>(output_gain));
+    std::fprintf(stderr, "Output gain: %.2fx\n", output_gain);
     const std::size_t samples_per_ms =
         static_cast<std::size_t>(sample_rate) * channels / 1000;
     std::size_t prebuffer = samples_per_ms * static_cast<std::size_t>(prebuffer_ms);

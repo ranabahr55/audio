@@ -282,8 +282,15 @@ int main(int argc, char** argv) {
                  connect.empty() ? "" : (", connect=" + connect).c_str(),
                  "");
 
+    // --- Microphone gain --------------------------------------------------
+    // The low-output ICS-43434 I2S MEMS mic needs its signal boosted in
+    // software to pick up voice beyond ~20 cm. Applied capture-side in push().
+    const double gain = std::stod(cfg.str("gain", "10.0"));
+
     // --- Capture -> encode -> publish loop --------------------------------
     Recorder rec(sample_rate, channels, frame_samples);
+    rec.set_push_gain(static_cast<float>(gain));
+    std::fprintf(stderr, "Capture gain (push): %.2fx\n", gain);
     if (!rec.start()) {
         opus_encoder_destroy(enc);
         return 1;

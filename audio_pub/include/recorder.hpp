@@ -46,6 +46,13 @@ public:
     // no more buffered data remains.
     bool read_frame(std::vector<float>& out);
 
+    // Capture-side software gain, multiplied into every sample inside push() as
+    // it lands in the ring buffer straight off the I2S callback. Intended for a
+    // low-output ICS-43434 MEMS mic that needs its sensitivity boosted to pick
+    // up voice beyond ~20 cm. 1.0 = unchanged, 10.0 = +20 dB. Thread-safe.
+    void set_push_gain(float gain) { push_gain_.store(gain); }
+    float push_gain() const { return push_gain_.load(); }
+
     // Number of frames dropped because the consumer could not keep up. A
     // non-zero, growing value means the encode/publish loop is too slow.
     unsigned long overruns() const { return overruns_.load(); }
@@ -74,4 +81,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<unsigned long> overruns_{0};
+
+    // Capture-side gain applied in push(). Read/written from any thread.
+    std::atomic<float> push_gain_{1.0f};
 };
