@@ -1,5 +1,8 @@
 # Prerequisites
 *.d
+/audio_pub/build/
+/audio_sub/build/
+
 
 # Compiled Object files
 *.slo
