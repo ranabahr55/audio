@@ -288,7 +288,12 @@ int main(int argc, char** argv) {
     const double gain = std::stod(cfg.str("gain", "10.0"));
 
     // --- Capture -> encode -> publish loop --------------------------------
+    // `device` selects the PortAudio input: empty = default, a numeric index,
+    // or a name substring like "APE" / "hw:1,2". The mic is never the default
+    // on a Jetson, so set this to your I2S/ADMAIF capture device.
+    const std::string device = cfg.str("device", "");
     Recorder rec(sample_rate, channels, frame_samples);
+    rec.set_device(device);
     rec.set_push_gain(static_cast<float>(gain));
     std::fprintf(stderr, "Capture gain (push): %.2fx\n", gain);
     if (!rec.start()) {

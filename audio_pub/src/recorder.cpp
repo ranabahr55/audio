@@ -2,8 +2,10 @@
 
 #include "recorder.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 Recorder::Recorder(int sample_rate, int channels, int frame_samples)
     : sample_rate_(sample_rate),
@@ -25,13 +27,58 @@ bool Recorder::start() {
         return false;
     }
 
-    PaStreamParameters in{};
-    in.device = Pa_GetDefaultInputDevice();
-    if (in.device == paNoDevice) {
-        std::fprintf(stderr, "No default input device.\n");
+    // List every input-capable device so the user can identify the mic. On a
+    // Jetson the I2S/ADMAIF capture is never the default device, so this makes
+    // it easy to pick the right `device` value for config.cfg.
+    const int n_devices = Pa_GetDeviceCount();
+    std::fprintf(stderr, "Input devices:\n");
+    for (int i = 0; i < n_devices; ++i) {
+        const PaDeviceInfo* di = Pa_GetDeviceInfo(i);
+        if (di && di->maxInputChannels > 0) {
+            std::fprintf(stderr, "  [%d] %s  (max in %d ch, default %.0f Hz)\n",
+                         i, di->name, di->maxInputChannels, di->defaultSampleRate);
+        }
+    }
+
+    // Resolve device_spec_: empty => default; all-digits => index; otherwise a
+    // case-insensitive substring match on the device name (e.g. "APE", "hw:1,2").
+    PaDeviceIndex dev = paNoDevice;
+    if (device_spec_.empty()) {
+        dev = Pa_GetDefaultInputDevice();
+    } else {
+        bool numeric = true;
+        for (unsigned char c : device_spec_)
+            if (!std::isdigit(c)) { numeric = false; break; }
+        if (numeric) {
+            dev = std::stoi(device_spec_);
+        } else {
+            std::string needle = device_spec_;
+            for (char& c : needle) c = static_cast<char>(std::tolower((unsigned char)c));
+            for (int i = 0; i < n_devices; ++i) {
+                const PaDeviceInfo* di = Pa_GetDeviceInfo(i);
+                if (!di || di->maxInputChannels <= 0) continue;
+                std::string name = di->name;
+                for (char& c : name) c = static_cast<char>(std::tolower((unsigned char)c));
+                if (name.find(needle) != std::string::npos) { dev = i; break; }
+            }
+        }
+    }
+
+    if (dev == paNoDevice || dev < 0 || dev >= n_devices ||
+        !Pa_GetDeviceInfo(dev) || Pa_GetDeviceInfo(dev)->maxInputChannels <= 0) {
+        std::fprintf(stderr,
+                     "Could not resolve input device '%s' (empty = default). "
+                     "Pick an [index] or name from the list above and set "
+                     "`device` in config.cfg.\n",
+                     device_spec_.c_str());
         Pa_Terminate();
         return false;
     }
+    std::fprintf(stderr, "Using input device [%d] %s\n",
+                 dev, Pa_GetDeviceInfo(dev)->name);
+
+    PaStreamParameters in{};
+    in.device = dev;
     in.channelCount = channels_;
     in.sampleFormat = paFloat32;
     in.suggestedLatency = Pa_GetDeviceInfo(in.device)->defaultLowInputLatency;

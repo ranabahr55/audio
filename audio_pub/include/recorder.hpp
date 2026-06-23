@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
+#include <string>
 #include <vector>
 
 class Recorder {
@@ -33,6 +34,14 @@ public:
 
     Recorder(const Recorder&) = delete;
     Recorder& operator=(const Recorder&) = delete;
+
+    // Select which PortAudio input device to capture from. `spec` is either a
+    // numeric PortAudio device index ("11") or a case-insensitive substring of
+    // the device name ("APE", "hw:1,2"). Empty => PortAudio's default input
+    // device. Must be called before start(); start() prints the full list of
+    // input-capable devices so you can find the right one on a Jetson where the
+    // mic is never the default.
+    void set_device(const std::string& spec) { device_spec_ = spec; }
 
     // Open and start the input stream. Returns false on any PortAudio error
     // (the reason is printed to stderr).
@@ -68,6 +77,8 @@ private:
     const int sample_rate_;
     const int channels_;
     const std::size_t frame_floats_;  // frame_samples * channels
+
+    std::string device_spec_;  // chosen input device (see set_device)
 
     PaStream* stream_ = nullptr;
 
