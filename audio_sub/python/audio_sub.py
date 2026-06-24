@@ -232,7 +232,9 @@ def build_zenoh_config(cfg):
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    default_cfg = os.path.join(here, "..", "audio_pub", "config.cfg")
+    # This script lives in audio_sub/python/, and the publisher's config is the
+    # sibling audio_pub/config.cfg — two levels up, then into audio_pub.
+    default_cfg = os.path.join(here, "..", "..", "audio_pub", "config.cfg")
     cfg_path = sys.argv[1] if len(sys.argv) > 1 else default_cfg
     if not os.path.exists(cfg_path):
         sys.exit(f"Config not found: {cfg_path}")
@@ -254,9 +256,41 @@ def main():
     snd = sf.SoundFile(output, mode="w", samplerate=sample_rate,
                        channels=channels, format="FLAC", subtype="PCM_16")
 
+    # -- optional real-time playback to the speakers --------------------------
+    # The decoder yields float32 PCM in [-1, 1]; sounddevice plays it straight.
+    # `output_gain` (shared config) scales monitor volume — the mics are quiet,
+    # so a boost here lets you hear the stream without touching the file. Set
+    # `playback = 0` in config on a headless machine to skip audio output.
+    output_gain = float(cfg.get("output_gain", 1.0))
+    play_live = str(cfg.get("playback", "1")).strip().lower() in (
+        "1", "true", "yes", "on")
+    player = None
+    if play_live:
+        try:
+            import sounddevice as sd
+            player = sd.OutputStream(samplerate=sample_rate, channels=channels,
+                                     dtype="float32", latency="low")
+            player.start()
+            print(f"Live playback ON (output_gain={output_gain}). "
+                  f"Set playback=0 in config to disable.")
+        except Exception as e:
+            print(f"[playback] disabled — could not open audio output: {e}",
+                  file=sys.stderr)
+            player = None
+
     pkt_queue = queue.Queue(maxsize=2048)
     stop = threading.Event()
     stats = {"received": 0, "lost": 0, "frames": 0}
+
+    def emit(pcm):
+        """Write one decoded PCM block to the FLAC file and the speakers."""
+        snd.write(pcm)
+        if player is not None:
+            out = np.clip(pcm * output_gain, -1.0, 1.0) if output_gain != 1.0 else pcm
+            try:
+                player.write(out)  # blocks at real-time pace, providing backpressure
+            except Exception as e:
+                print(f"\n[playback] {e}", file=sys.stderr)
 
     # -- writer thread: decode + FLAC write, with packet-loss concealment -----
     def writer():
@@ -272,13 +306,13 @@ def main():
                 gap = (seq - expected) & 0xFFFFFFFF
                 if 0 < gap <= MAX_CONCEAL:
                     for _ in range(gap):
-                        snd.write(decoder.conceal(frame_samples))
+                        emit(decoder.conceal(frame_samples))
                         stats["lost"] += 1
                         stats["frames"] += 1
             try:
                 if payload:  # empty payload == DTX/silence frame, skip decode
                     pcm = decoder.decode(payload)
-                    snd.write(pcm)
+                    emit(pcm)
                     stats["frames"] += 1
             except RuntimeError as e:
                 print(f"\n[decode] {e}", file=sys.stderr)
@@ -319,6 +353,9 @@ def main():
         session.close()
         stop.set()
         wt.join(timeout=5.0)
+        if player is not None:
+            player.stop()
+            player.close()
         decoder.close()
         snd.close()
         secs = stats["frames"] * frame_ms / 1000.0
