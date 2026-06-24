@@ -232,7 +232,7 @@ def build_zenoh_config(cfg):
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    default_cfg = os.path.join(here, "..", "audio_pub", "config.cfg")
+    default_cfg = os.path.join(here, "..", "..","audio_pub", "config.cfg")
     cfg_path = sys.argv[1] if len(sys.argv) > 1 else default_cfg
     if not os.path.exists(cfg_path):
         sys.exit(f"Config not found: {cfg_path}")
