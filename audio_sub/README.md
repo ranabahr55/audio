@@ -1,8 +1,9 @@
 # audio_player — live low-latency playback (C++)
 
-A drop-in **listener** for the `audio_pub` stream. Where `../audio_sub.py`
-decodes the Opus-over-Zenoh stream to a **FLAC file**, this plays it straight
-to your **speakers** the instant packets arrive:
+A drop-in **listener** for the `audio_pub` stream. The Python `audio_sub.py`
+decodes the Opus-over-Zenoh stream to a **FLAC file** (and can play it live too);
+this C++ player is a dedicated, lower-latency path that plays straight to your
+**speakers** the instant packets arrive — no file, tighter jitter buffer:
 
 ```
   Zenoh sub → parse [seq | opus] → Opus decode → PortAudio out → speakers
