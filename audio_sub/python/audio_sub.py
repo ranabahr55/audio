@@ -37,6 +37,11 @@ import numpy as np
 import soundfile as sf
 import zenoh
 
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None  # playback disabled if the library is missing
+
 
 # --------------------------------------------------------------------------- #
 #  Config: same tiny `key = value` format the C++ side reads.
@@ -245,6 +250,8 @@ def main():
     frame_samples = sample_rate * frame_ms // 1000
     key = cfg.get("key", "audio/stream/mic1")
     output = cfg.get("output", "capture.flac")
+    play = str(cfg.get("playback", "1")).strip().lower() in (
+        "1", "true", "yes", "on")
     # The subscriber writes relative to its own directory unless given an
     # absolute path, so output lands predictably next to this script.
     if not os.path.isabs(output):
@@ -256,7 +263,52 @@ def main():
 
     pkt_queue = queue.Queue(maxsize=2048)
     stop = threading.Event()
-    stats = {"received": 0, "lost": 0, "frames": 0}
+    stats = {"received": 0, "lost": 0, "frames": 0, "play_dropped": 0}
+
+    # -- live playback: own stream + queue so the speaker clock never blocks
+    #    decode/disk I/O. A short queue keeps latency low; if playback falls
+    #    behind we drop frames (the FLAC file stays lossless regardless).
+    play_stream = None
+    play_queue = None
+    if play and sd is None:
+        print("[playback] sounddevice not installed; "
+              "run 'pip install sounddevice'. Saving only.", file=sys.stderr)
+        play = False
+    if play:
+        try:
+            play_stream = sd.OutputStream(
+                samplerate=sample_rate, channels=channels, dtype="float32")
+            play_stream.start()
+            play_queue = queue.Queue(maxsize=32)
+        except Exception as e:
+            print(f"[playback] could not open output device: {e}. "
+                  "Saving only.", file=sys.stderr)
+            play_stream = None
+            play = False
+
+    def player():
+        while not (stop.is_set() and play_queue.empty()):
+            try:
+                pcm = play_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                play_stream.write(pcm)
+            except Exception as e:
+                print(f"\n[playback] {e}", file=sys.stderr)
+
+    def enqueue_play(pcm):
+        if play_queue is None:
+            return
+        try:
+            play_queue.put_nowait(pcm)
+        except queue.Full:
+            stats["play_dropped"] += 1  # speaker fell behind; stay real-time
+
+    pt = None
+    if play_stream is not None:
+        pt = threading.Thread(target=player, daemon=True)
+        pt.start()
 
     # -- writer thread: decode + FLAC write, with packet-loss concealment -----
     def writer():
@@ -272,13 +324,16 @@ def main():
                 gap = (seq - expected) & 0xFFFFFFFF
                 if 0 < gap <= MAX_CONCEAL:
                     for _ in range(gap):
-                        snd.write(decoder.conceal(frame_samples))
+                        pcm = decoder.conceal(frame_samples)
+                        snd.write(pcm)
+                        enqueue_play(pcm)
                         stats["lost"] += 1
                         stats["frames"] += 1
             try:
                 if payload:  # empty payload == DTX/silence frame, skip decode
                     pcm = decoder.decode(payload)
                     snd.write(pcm)
+                    enqueue_play(pcm)
                     stats["frames"] += 1
             except RuntimeError as e:
                 print(f"\n[decode] {e}", file=sys.stderr)
@@ -302,7 +357,8 @@ def main():
     print("Opening Zenoh session...")
     session = zenoh.open(build_zenoh_config(cfg))
     sub = session.declare_subscriber(key, on_sample)
-    print(f"Subscribed to '{key}'. Writing -> {output}")
+    print(f"Subscribed to '{key}'. Writing -> {output}"
+          + ("  (live playback ON)" if play_stream is not None else ""))
     print("Receiving... press Ctrl-C to stop and finalize the file.")
 
     sig = threading.Event()
@@ -312,13 +368,20 @@ def main():
         while not sig.is_set():
             sig.wait(1.0)
             print(f"\rreceived={stats['received']} frames={stats['frames']} "
-                  f"concealed/lost={stats['lost']}   ", end="", flush=True)
+                  f"concealed/lost={stats['lost']} "
+                  f"play_dropped={stats['play_dropped']}   ",
+                  end="", flush=True)
     finally:
         print("\nStopping...")
         sub.undeclare()
         session.close()
         stop.set()
         wt.join(timeout=5.0)
+        if pt is not None:
+            pt.join(timeout=5.0)
+        if play_stream is not None:
+            play_stream.stop()
+            play_stream.close()
         decoder.close()
         snd.close()
         secs = stats["frames"] * frame_ms / 1000.0
